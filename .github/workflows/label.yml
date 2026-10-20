@@ -1,0 +1,57 @@
+name: Generate label
+
+on:
+  # Manual form: Actions tab > Generate label > Run workflow
+  workflow_dispatch:
+    inputs:
+      name:     { description: "Recipient name", required: true, type: string }
+      team:     { description: "Team (shown under Contents)", required: false, type: string }
+      street:   { description: "Street and number", required: false, type: string }
+      city:     { description: "Postcode and city", required: false, type: string }
+      province: { description: "Province code (big letters)", required: false, type: string }
+      contents: { description: "Contents", required: false, type: string }
+      eta:      { description: "Estimated delivery", required: false, type: string }
+  # Automatic: any system can POST event_type "new-label" with a client_payload
+  repository_dispatch:
+    types: [new-label]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: label-commits
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install reportlab
+      - name: Write payload
+        env:
+          PAYLOAD: ${{ github.event_name == 'repository_dispatch' && toJson(github.event.client_payload) || toJson(github.event.inputs) }}
+        run: printf '%s' "$PAYLOAD" > payload.json
+      - name: Generate PDF
+        env:
+          TRACK_BASE_URL: https://example.com/track/
+        run: |
+          python - << 'PY'
+          import json
+          p = json.load(open("payload.json"))
+          if p.get("team") and not p.get("contents"):
+              p["contents"] = p["team"]          # team goes under "Contents"
+          json.dump(p, open("payload.json", "w"))
+          PY
+          python generate_label.py payload.json
+      - name: Commit PDF
+        run: |
+          rm -f payload.json
+          git config user.name "label-bot"
+          git config user.email "label-bot@users.noreply.github.com"
+          git add docs/labels
+          git commit -m "Update label" || echo "nothing to commit"
+          git pull --rebase
+          git push
